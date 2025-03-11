@@ -1,7 +1,21 @@
-
-
+import SymbolicIndexingInterface
 
 struct VariableStructureSystemProblem end
+
+function restartDef()
+    restartedIntegrators = []
+    function restart!(integ::SciMLBase.DEIntegrator)
+        push!(restartedIntegrators, integ)
+        terminate!(integ)
+    end
+    function getRestartedIntegrators()
+        return copy(restartedIntegrators)
+    end
+    return restart!, getRestartedIntegrators
+end
+
+restart!, getRestartedIntegrators = restartDef()
+
 
 mutable struct VSSProblem
     f::Any
@@ -18,16 +32,16 @@ function VSSProblem(f, m, u0::Vector, tspan::Tuple; kwargs...)
 end
 
 mutable struct CVSSProblem
-    f::Dict{Any, Any}
-    u0::Vector
-    tspan::Tuple
+    f::Dict{Union{Contexts.Context, Contexts.AbstractContextRule}, ODESystem}
+    u0::Dict{Num, Float64}
+    tspan::Tuple{Float64, Float64}
     p::Any
     kwargs::Any
     problem_type::Any
 end
 
 function CVSSProblem(f::Dict, u0::Vector, tspan::Tuple; kwargs...)
-    CVSSProblem(f, u0, tspan, SciMLBase.NullParameters(), kwargs, VariableStructureSystemProblem())
+    CVSSProblem(f, Dict(u0), tspan, SciMLBase.NullParameters(), kwargs, VariableStructureSystemProblem())
 end
 
 struct VSSSolution{T, N, uType, uType2, DType, tType, rateType, P, A, IType, S, AC <: Vector{<:Union{Nothing, Vector{Int}}}, R, O, Sols}  <: SciMLBase.AbstractODESolution{T, N, uType}
@@ -50,16 +64,14 @@ struct VSSSolution{T, N, uType, uType2, DType, tType, rateType, P, A, IType, S, 
     singleSolutions::Sols
 end
 
-
-function solve(problem::CVSSProblem, solver=FBDF(); kwargs...)
-    t_max = problem.tspan[2]
-    
-    sol_temp = nothing
-    t_end = 0
+function solve(problem::CVSSProblem, alg::DiffEqBase.AbstractODEAlgorithm; kwargs...)
+    t_max::Float64 = problem.tspan[2]
+    t_end::Float64 = 0.0
     solutions::Vector{ODESolution} = []
-    contexts = collect(keys(problem.f))
-    while true
-        activeContexts = filter(x -> isActive(x), contexts)
+    contexts::Vector{Union{Contexts.Context, Contexts.AbstractContextRule}} = collect(keys(problem.f))
+    modelProbMap::Dict = Dict()
+    while t_end < t_max
+        activeContexts::Vector{Union{Contexts.Context, Contexts.AbstractContextRule}} = Context[filter(x -> isActive(x), contexts)...]
         if length(activeContexts) == 1
             nothing
         elseif length(activeContexts) == 0
@@ -68,57 +80,68 @@ function solve(problem::CVSSProblem, solver=FBDF(); kwargs...)
         else
             @warn "Active contexts do not specify exactly 1 active model. Only first possible model is simulated. You might want to define the context-to-model assignment disjunctly."
         end
-        activeModel = problem.f[activeContexts[1]]
-        
-        u0 = solutions == [] ? problem.u0 : Dict(filter(x -> x !== nothing, [toexpr(v) in toexpr.(unknowns(sol_temp.prob.f.sys)) ? v => sol_temp[v.metadata[Symbolics.VariableSource][2]][end] : nothing for v in unknowns(activeModel)]))
-        prob = ODEProblem(activeModel, u0, (t_end, t_max))
-        sol_temp = ModelingToolkit.solve(prob, solver; kwargs...)
-        t_end = sol_temp[t, end]
-        push!(solutions, sol_temp)
-        if t_end == t_max
+        @info "Simulating model for context < $(activeContexts[1]) > at t = $(t_end)." 
+        activeModel::ODESystem = problem.f[activeContexts[1]]
+        u0 = solutions == [] ? problem.u0 : Dict(filter(x -> x !== nothing, [toexpr(v) in toexpr.(unknowns((solutions[end]).prob.f.sys)) ? v => solutions[end][v.metadata[Symbolics.VariableSource][2]][end] : nothing for v in unknowns(activeModel)]))    
+        if activeModel in keys(modelProbMap)
+            #prob = ODEProblem(activeModel, u0, (t_end, t_max))
+            prob = remake(modelProbMap[activeModel], u0 = u0, tspan = (t_end, t_max))
+        else
+            prob = ODEProblem(activeModel, u0, (t_end, t_max))
+            modelProbMap[activeModel] = prob
+        end
+        integ = init(prob, alg; kwargs...)
+        push!(solutions,  ModelingToolkit.solve!(integ))
+        t_end = solutions[end][t, end]
+        if solutions[end].retcode == ReturnCode.Terminated
+            restartedIntegrators = getRestartedIntegrators()
+            if integ in restartedIntegrators
+                filter!(x -> x !== integ, restartedIntegrators)
+            else
+                break
+            end
+        else
             break
         end
     end
 
-    stats = solutions[1].stats
-    t_sol = solutions[1].t
-    u = solutions[1].u
-    symbolics = unknowns(solutions[1].prob.f.sys)
+    stats::SciMLBase.DEStats = solutions[1].stats
+    t_sol::Vector{Float64} = solutions[1].t
+    u::Vector{Vector{Float64}} = solutions[1].u
+    symbolics_idx::Dict = Dict([toexpr(v) => SymbolicIndexingInterface.variable_index(solutions[1].prob.f.sys, v) for v in unknowns(solutions[1].prob.f.sys)])
+    """println(symbolics_idx)
+    symbolics = collect(keys(symbolics_idx))
     u_new = nothing
     for sol in solutions[2:end]
         stats = SciMLBase.merge(stats, sol.stats)
         t_sol = [t_sol; sol.t]
-        u_new = [sol.u[i] for i in eachindex(sol.u)]
+        u_new = copy(sol.u)
+        symbolics_idx_new = Dict([toexpr(v) => SymbolicIndexingInterface.variable_index(sol.prob.f.sys, v) for v in unknowns(sol.prob.f.sys)])
+        println("A: ", symbolics_idx_new)
         new_variables = filter(v -> !(toexpr(v) in toexpr.(symbolics)),  unknowns(sol.prob.f.sys))
         missing_variables = filter(v -> !(toexpr(v) in toexpr.(unknowns(sol.prob.f.sys))), symbolics)
         for v in new_variables
-            push!(symbolics, v)
-            [push!(ai, NaN) for ai in u]
+            println()
+            symbolics_idx[toexpr(v)] = max(collect(values(symbolics_idx)) + 1)
+            push!(u_new[max(collect(values(symbolics_idx)) + 1)], fill(NaN, length(sol.u[1]))...)
         end
-
-        for (j, s) in enumerate(symbolics)
+        for (s, j) in symbolics_idx
             if toexpr(s) in toexpr.(missing_variables)
-                [push!(u_new[i], NaN) for i in eachindex(sol.u)]
+                println(j)
+                push!(u_new[j], fill(NaN, length(sol.u[1]))...)
             else
-                for (k, v) in enumerate(unknowns(sol.prob.f.sys))
-                    if toexpr(v) == toexpr(s)
-                        for i in eachindex(sol.u)
-                            u_new[i][j] = sol.u[i][k]
-                        end
-                    end
-                end
+                println(j)
+                push!(u_new[j], sol.u[symbolics_idx_new[toexpr(s)]]...)
             end
         end
-        
         u = [u; u_new]
-    end
+    end"""
 
-    prob = [sol.prob for sol in solutions]
+    probs = [sol.prob for sol in solutions]
     alg = [sol.alg for sol in solutions]
     interp = [sol.interp for sol in solutions]
     dense  = all([sol.dense for sol in solutions])
     tslocation = 0
-    stats = stats
     statsVector = [sol.stats for sol in solutions]
     alg_choice = [sol.alg_choice for sol in solutions]
     retcode = [sol.retcode for sol in solutions]
@@ -128,9 +151,10 @@ function solve(problem::CVSSProblem, solver=FBDF(); kwargs...)
     T = eltype(eltype(u))
     N = length((size(u[1])..., length(u)))
 
-    VSSSolution{T, N, typeof(u), Nothing, Nothing, typeof(t_sol), typeof([]), typeof(prob), 
+
+    VSSSolution{T, N, typeof(u), Nothing, Nothing, typeof(t_sol), typeof([]), typeof(probs), 
                 typeof(alg), typeof(interp), typeof(stats), typeof(alg_choice), typeof(resid), 
-                typeof(original), typeof(solutions)}(u, nothing, nothing, t_sol, [], prob, alg, interp, dense,
+                typeof(original), typeof(solutions)}(u, nothing, nothing, t_sol, [], probs, alg, interp, dense,
                                   tslocation, stats, statsVector, alg_choice, retcode, resid, original, solutions)
 
 end
@@ -193,7 +217,21 @@ function solve(problem::VSSProblem, solver=Rosenbrock23(); kwargs...)
 end
 
 function Base.getindex(sol::VSSSolution, sym::Num)
-    v = [s[sym] for s in sol.singleSolutions]
+    v = []
+
+    for s in sol.singleSolutions
+        try
+            push!(v, s[sym])
+        catch e
+            if (SymbolicIndexingInterface.is_independent_variable(s.prob.f.sys, sym) | 
+                       SymbolicIndexingInterface.is_observed(s.prob.f.sys, sym) | 
+                       SymbolicIndexingInterface.is_variable(s.prob.f.sys, sym))
+                push!(v, zeros(length(s.u[1])).+ NaN)
+            else
+                throw("ArgumentError: $sym is neither an observed nor an unknown variable of one of the contextual models.")
+            end
+        end
+    end
     vcat(v...)
 end
 
