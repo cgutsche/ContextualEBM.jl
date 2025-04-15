@@ -9,7 +9,7 @@ function restartDef()
         terminate!(integ)
     end
     function getRestartedIntegrators()
-        return copy(restartedIntegrators)
+        return restartedIntegrators#copy(restartedIntegrators)
     end
     return restart!, getRestartedIntegrators
 end
@@ -109,34 +109,9 @@ function solve(problem::CVSSProblem, alg::DiffEqBase.AbstractODEAlgorithm; kwarg
     t_sol::Vector{Float64} = solutions[1].t
     u::Vector{Vector{Float64}} = solutions[1].u
     symbolics_idx::Dict = Dict([toexpr(v) => SymbolicIndexingInterface.variable_index(solutions[1].prob.f.sys, v) for v in unknowns(solutions[1].prob.f.sys)])
-    """println(symbolics_idx)
-    symbolics = collect(keys(symbolics_idx))
-    u_new = nothing
-    for sol in solutions[2:end]
-        stats = SciMLBase.merge(stats, sol.stats)
-        t_sol = [t_sol; sol.t]
-        u_new = copy(sol.u)
-        symbolics_idx_new = Dict([toexpr(v) => SymbolicIndexingInterface.variable_index(sol.prob.f.sys, v) for v in unknowns(sol.prob.f.sys)])
-        println("A: ", symbolics_idx_new)
-        new_variables = filter(v -> !(toexpr(v) in toexpr.(symbolics)),  unknowns(sol.prob.f.sys))
-        missing_variables = filter(v -> !(toexpr(v) in toexpr.(unknowns(sol.prob.f.sys))), symbolics)
-        for v in new_variables
-            println()
-            symbolics_idx[toexpr(v)] = max(collect(values(symbolics_idx)) + 1)
-            push!(u_new[max(collect(values(symbolics_idx)) + 1)], fill(NaN, length(sol.u[1]))...)
-        end
-        for (s, j) in symbolics_idx
-            if toexpr(s) in toexpr.(missing_variables)
-                println(j)
-                push!(u_new[j], fill(NaN, length(sol.u[1]))...)
-            else
-                println(j)
-                push!(u_new[j], sol.u[symbolics_idx_new[toexpr(s)]]...)
-            end
-        end
-        u = [u; u_new]
-    end"""
-
+    ###
+    ### TO DO: Correct concatenation of u (works without by saving single solutions)
+    ###
     probs = [sol.prob for sol in solutions]
     alg = [sol.alg for sol in solutions]
     interp = [sol.interp for sol in solutions]
