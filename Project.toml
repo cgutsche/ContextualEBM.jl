@@ -1,0 +1,11 @@
+name = "ContextualEBM"
+uuid = "46254d6d-ec6d-40e1-a567-02de78fdaf1f"
+authors = ["Christian Gutsche <christian.gutsche@mailbox.tu-dresden.de>"]
+version = "0.1.0"
+
+[deps]
+Contexts = "d092ff92-9eeb-4ab6-a2ac-bfa3dd0c68f9"
+DiffEqBase = "2b5f629d-d688-5b77-993f-72d75c75574e"
+ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
+SciCompDSL = "91a8cdf1-4ca6-467b-a780-87fda3fff15e"
+SymbolicIndexingInterface = "2efcf032-c050-4f8e-a9bb-153293bab1f5"
