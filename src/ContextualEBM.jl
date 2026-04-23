@@ -3,7 +3,7 @@ module ContextualEBM
 import SymbolicIndexingInterface
 using SciCompDSL, DiffEqBase
 
-inlcude("VSS.jl")
+include("VSS.jl")
 export VSSSystem, VSSSolution, restart!, getRestartedIntegrators, VSSProblem, VariableStructureSystemProblem
 
 include("CVSS.jl")
