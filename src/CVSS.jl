@@ -1,5 +1,21 @@
 
+struct CVSSSystem
+    f::Dict{Contexts.AbstractContext, System}
+end
 
+function Base.getproperty(obj::CVSSSystem, symbol::Symbol)
+    if hasproperty(obj, symbol)
+        return getfield(obj, symbol)
+    else
+        f = getfield(obj, :f)
+        for subsystem in values(f)
+            if hasproperty(subsystem, symbol)
+                return getproperty(subsystem, symbol)
+            end
+        end
+        error("Property $symbol not found in CVSSSystem.")
+    end
+end
 
 mutable struct CVSSProblem
     f::Dict{Union{Contexts.AbstractContext}, ODEProblem}
@@ -12,8 +28,19 @@ mutable struct CVSSProblem
     initVariables::Dict{System, Vector{Num}}
 end
 
-function CVSSProblem(f::Dict, u0::Vector, tspan::Tuple; kwargs...)
-    CVSSProblem(f, Dict(u0), tspan, SciMLBase.NullParameters(), kwargs, VariableStructureSystemProblem())
+function CVSSProblem(f::CVSSSystem, u0::Vector, tspan::Tuple; kwargs...)
+	problems = Dict{Contexts.AbstractContext, ODEProblem}()
+	stateMigrationVars = Dict{System, Set{Expr}}()
+	initVars = Dict{System, Vector{Num}}()
+	u0 = Dict(u0)
+	for (context, model) in f.f
+		u0_vars = unknowns(model)
+		initVars[model] = u0_vars
+		u0_prob = [var => var in keys(u0) ? u0[var] : 0.0 for var in u0_vars]
+		problems[context] = ODEProblem(model, u0_prob, tspan; build_initializeprob= false)
+		stateMigrationVars[model] = Set([toexpr.(unknowns(model)); toexpr.(map(eq -> eq.lhs, observed(model)))])
+	end
+	CVSSProblem(problems, u0, tspan, SciMLBase.NullParameters(), kwargs, VariableStructureSystemProblem(), stateMigrationVars, initVars)
 end
 
 function solve(problem::CVSSProblem, alg::DiffEqBase.AbstractODEAlgorithm; printLog = true, kwargs...)
@@ -112,4 +139,3 @@ function solve(problem::CVSSProblem, alg::DiffEqBase.AbstractODEAlgorithm; print
                                   tslocation, stats, statsVector, alg_choice, retcode, resid, original, solutions)
 
 end
-
